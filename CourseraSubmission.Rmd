@@ -1,0 +1,181 @@
+---
+title: "Practical Machine Learning<br>Prediction Assignment Submission"
+author: "Arnaud Desombre"
+date: "June 12, 2015"
+output: html_document
+---
+<br>
+<br>
+
+#Background and Introduction
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks.<br>
+
+One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, the goal is to use data from accelerometers on the belt, forearm, arm, and dumbbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways.<br>
+
+More information is available from the website <http://groupware.les.inf.puc-rio.br/har> (see the section on the Weight Lifting Exercise Dataset).<br>
+
+The goal of this project is to predict the manner in which the participants did the exercise. This is the *classe* variable in the training set, which classifies the correct and incorrect outcomes into A, B, C, D, and E categories. This report describes how the model was built, its cross validation, expected out of sample error calculation, and the choices made. It was used successfully to accurately predict all 20 different test cases on the Coursera website.<br>
+
+This document is the write-up submission for the course [Practical Machine Learning](<https://class.coursera.org/predmachlearn-015>) by Jeff Leek, PhD, Professor at Johns Hopkins University, Bloomberg School of Public Health. This 4-week course was offered on [Coursera](<https://www.coursera.org/#>) in June 2015, and is part of Johns Hopkins Data Science Specialization.<br><br>
+
+#Data Description
+
+The training data for this project are available here:<br>
+<https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv><br>
+
+The test data are available here:<br>
+<https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv><br>
+
+The data for this project come from this source:<br>
+<http://groupware.les.inf.puc-rio.br/har><br>
+
+We first download the data from the links referenced above to our computer and upload the files into R, interpreting the miscellaneous NA, #DIV/0! and empty fields as NA:
+```{r}
+setwd("D:/coursera")  # or any directory of your choice
+training <- read.csv("pml-training.csv", na.strings=c("NA","#DIV/0!",""))
+testing  <- read.csv("pml-testing.csv",  na.strings=c("NA","#DIV/0!",""))
+```
+<br>
+We take a quick look at the data and particularly at *classe* which is the variable we need to predict.<br>
+```{r}
+str(training)
+table(training$classe)
+prop.table(table(training$user_name, training$classe), 1)
+prop.table(table(training$classe))
+```
+<br>Based on the above information, let's first do some basic data clean-up by removing columns 1 to 7, which are there just for information and reference purposes:
+```{r}
+training <- training[,7:160]
+testing  <- testing[,7:160]
+```
+and removing all columns that are mostly NA:
+```{r}
+is_data  <- apply(!is.na(training), 2, sum) > 19621  # which is the number of observations
+training <- training[, is_data]
+testing  <- testing[, is_data]
+```
+<br>Before we can move forward with data analysis, **we split the training set into two for cross validation purposes**. We randomly subsample **60%** of the set for training purposes (actual model building), while the **40%** remainder will be used for testing, evaluation and accuracy measurement.
+```{r}
+library(caret)
+inTrain <- createDataPartition(y=training$classe, p=0.60, list=FALSE)
+train1  <- training[inTrain,]
+train2  <- training[-inTrain,]
+length(train1)
+length(train2)
+```
+The caret library that we are using can be either loaded directly from CRAN using the command install.packages("caret") in R, or downloaded from the [caret](<http://caret.r-forge.r-project.org/>) website. The website also includes a somewhat comprehensive documentation.<br>
+
+At this stage, *train1* is the training data set, and *train2* is the testing data set. The dataset *train2* will never be looked at and will be used only for accuracy measurements.<br>
+
+We can now [i] identify the "zero covariates"" from *train1* and [ii] remove these "zero covariates"" from both *train1* and *train2*:
+```{r}
+nzv_cols <- nearZeroVar(train1)
+if(length(nzv_cols) > 0) {
+  train1 <- train1[, -nzv_cols]
+  train2 <- train2[, -nzv_cols]
+}
+length(train1)
+length(train2)
+```
+This step didn't do anything as the earlier removal of NA was sufficient to clean the data. We are satisfied that we now have 53 clean covariates to build a model for *classe* (which is the 54th column of the data set).<br><br>
+
+#Data Manipulation
+
+53 covariates is a lot of variables... Let's look at their relative importance using a quick Random Forest algorithm (which we call directly using randomForest() rather than the caret package purely for speed purposes as we cannot specify the number of trees to use in caret), and plotting data importance using varImpPlot():
+```{r}
+library(randomForest)
+set.seed(1234)
+fitModel <- randomForest(classe~., data=train1, importance=TRUE, ntree=100)
+varImpPlot(fitModel)
+```
+<br>From the Accuracy and Gini graphs above, we select the top 10 variables that we'll use for model building. If the accuracy of the resulting model is acceptable, limiting the number of variables is a good idea to ensure readability and interpretability of the model. A model with 10 parameters is certainly much more user friendly than a model with 53 parameters.<br>
+
+Our 10 covariates are: *yaw_belt*, *roll_belt*, *num_window*, *pitch_belt*, *magnet_dumbbell_y*, *magnet_dumbbell_z*, *pitch_forearm*, *accel_dumbbell_y*, *roll_arm*, and *roll_forearm*.<br>
+
+We can identify an interesting relationship between *roll_belt* and *magnet_dumbbell_y*:
+```{r}
+qplot(roll_belt, magnet_dumbbell_y, colour=classe, data=train1)
+```
+<br>This graph suggests that we could probably categorize the data into groups based on *roll_belt value*.<br>
+
+Incidentally, a quick tree classifier selects *roll_belt* as the first discriminant among all 53 covariates:
+```{r}
+library(rpart.plot)
+set.seed(1234)
+fitModel <- rpart(classe~., data=train1, method="class")
+prp(fitModel)
+```
+<br>However, we will not investigate tree classifiers further as the Random Forest algorithm will prove very satisfactory.<br><br>
+
+#Modeling
+
+We are now ready to create our model.<br>
+We are using a Random Forest algorithm, using the train() function from the caret package.<br>
+We are using 10 variables out of the 53 as model parameters. These variables were the most significant variables generated by an initial Random Forest algorithm, and are *yaw_belt*, *roll_belt*, *num_window*, *pitch_belt*, *magnet_dumbbell_y*, *magnet_dumbbell_z*, *pitch_forearm*, *accel_dumbbell_y*, *roll_arm*, and *roll_forearm*.<br>
+We are using a 2-fold cross-validation train control.<br>
+
+```{r}
+set.seed(1234)
+fitModel <- train(classe~yaw_belt+roll_belt+num_window+pitch_belt+magnet_dumbbell_y+magnet_dumbbell_z+pitch_forearm+accel_dumbbell_y+roll_arm+roll_forearm, data=train1, method="rf", trControl=trainControl(method="cv",number=2), prox=TRUE, verbose=TRUE, allowParallel=TRUE)
+```
+<br>The above line of code requires between 5 and 10 minutes to execute (selecting all 53 variables would increase this time by at least 25%), so we may want to save the model generated for later use:
+```{r}
+saveRDS(fitModel, "modelRF.Rds")
+```
+We can later use this tree, by allocating it to a variable using the command:
+```{r}
+fitModel <- readRDS("modelRF.Rds")
+```
+(Note that the modelRF.Rds file uses more than 50M of space on our disk. We are talking seriously large files, about 5 times the size of the training set on the disk, and containing lots of data!)<br><br>
+
+How accurate is this model?<br>
+We can use caret's confusionMatrix() function applied on *train2* (the test set) to get an idea of the out of sample error rate:
+```{r}
+predictions <- predict(fitModel, newdata=train2)
+confusionMatrix(predictions, train2$classe)
+```
+<br>
+Woah! **99.77%** is a very impressive number for accuracy which totally validates the idea / hypothesis we made to eliminate most variables and use only 10 covariates.<br>
+We are now ready to answer Coursera's challenge and predict the 20 observations in *testing* (recall from earlier that *testing* corresponds to the data set pml-testing.csv)<br><br>
+
+#Coursera Submission
+
+We predict the classification of the 20 observations of the *testing* data set for Coursera's "Course Project: Submission" challenge page:
+```{r}
+predictions <- predict(fitModel, newdata=testing)
+testing$classe <- predictions
+```
+<br>We create a .CSV file with all the results, presented in two columns (named *problem_id* and *classe*) and 20 rows of data:
+```{r}
+submit <- data.frame(problem_id = testing$problem_id, classe = predictions)
+write.csv(submit, file = "coursera-submission.csv", row.names = FALSE)
+```
+<br>And we create 20 .TXT file that we will upload one by one in the Coursera website (the 20 files created are called problem_1.txt to problem_20.txt):
+```{r}
+answers = testing$classe
+write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_",i,".txt")
+    write.table(x[i], file=filename, quote=FALSE, row.names=FALSE, col.names=FALSE)
+  }
+}
+write_files(answers)
+```
+<br>And the result, with no surprise, is a perfect 20/20:
+![](coursera_submission.png)
+<br>
+<br>
+
+#Conclusion
+
+In this assignment, we accurately predicted the classification of 20 observations using a Random Forest algorithm trained on a subset of data using only about 20% of the covariates.<br>
+
+The out-of-sample error obtained (99.77%) is obviously highly suspicious as it is never the case that machine learning algorithm are that accurate, and a mere 85% if often a good result.<br>
+
+Either the 6 participants for which we had data were extraordinarily obedient (for more than 19 thousand observations, a strong performance!), or the data was somehow doctored for this class, or additional testing needs to be performed on other different participants, or Fitbit really works!<br>
+
+It may be interesting to apply the *fitModel* tree from the Random Forest algorithm obtained in this paper to a completely new set of participants, to complement and validate the analysis.<br>
+
+This project was a very interesting introduction to practical machine learning, and opened up many doors in machine learning in R.
